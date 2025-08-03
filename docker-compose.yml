@@ -1,0 +1,48 @@
+services:
+  rust:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    tty: true
+    ports:
+      - 9000:9000
+    volumes:
+      - .:/workspace
+    # network_mode: "host"
+    # extra_hosts:
+    #   - host.docker.internal:host-gateway
+  client:
+    build:
+      context: .
+      dockerfile: ./fido2-client/.devcontainer/Dockerfile
+    tty: true
+    ports:
+       - 5173:5173
+    volumes:
+      - .:/workspace
+  mongo-db:
+    image: mongo
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: fido-db
+    command: 
+      - '--logpath'
+      - '/var/log/mongodb/mongod.log'
+    ports:
+      - 27017:27017
+
+  mongo-express:
+    image: mongo-express
+    restart: always
+    ports:
+      - 8081:8081
+    environment:
+      ME_CONFIG_MONGODB_SERVER: mongo-db
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin # MongoDBの管理者（rootユーザー）のユーザー名(Mongo ExpressがMongoDBに接続する際に使用)
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password
+      ME_CONFIG_BASICAUTH_USERNAME: admin # Mongo Expressへの基本認証のユーザー名
+      ME_CONFIG_BASICAUTH_PASSWORD: password
+    depends_on: # 依存関係を設定
+     - mongo-db
