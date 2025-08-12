@@ -2,12 +2,14 @@ services:
   rust:
     build:
       context: .
-      dockerfile: .devcontainer/Dockerfile
+      dockerfile: ./rp-server/.devcontainer/Dockerfile
     tty: true
     ports:
       - 9000:9000
     volumes:
       - .:/workspace
+    depends_on:
+      - mongo-db
     # network_mode: "host"
     # extra_hosts:
     #   - host.docker.internal:host-gateway

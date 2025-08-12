@@ -1,8 +1,8 @@
 {
-  "name": "Rust",
-  "dockerComposeFile": "../docker-compose.yml",
+  "name": "rp-server",
+  "dockerComposeFile": "../../docker-compose.yml",
   "service": "rust",
-  "workspaceFolder": "/workspace/app",
+  "workspaceFolder": "/workspace/rp-server",
   "customizations": {
     "vscode": {
       "extensions": [
