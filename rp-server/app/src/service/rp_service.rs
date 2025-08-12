@@ -133,17 +133,28 @@ pub async fn verify_response(
     // );
     // clientDataJSONをbase64urlデコードする
     let client_data = deserialize_client_data(public_key_credential.clone().response.client_data);
-    // info!("client data: {:#?}", client_data);
+    info!("client data: {:#?}", client_data);
 
     // originの検証
-    // info!(
-    //     "attestationObject: {:#?}",
-    //     public_key_credential.clone().response.attestation_object
-    // );
+    info!(
+        "attestationObject: {:#?}",
+        public_key_credential
+            .clone()
+            .response
+            .attestation_object
+            .trim_matches('\"')
+            .to_string()
+    );
     // attestationObjectをcborデコードする
-    let attestation =
-        deserialize_attestation_object(public_key_credential.clone().response.attestation_object);
-    // info!("attestation: {:#?}", attestation);
+    let attestation = deserialize_attestation_object(
+        public_key_credential
+            .clone()
+            .response
+            .attestation_object
+            .trim_matches('\"')
+            .to_string(),
+    );
+    info!("attestation: {:#?}", attestation);
     // attenstation.authDataをparseAuthenticatorDataでパースしなきゃいけない、本当に面倒な処理
 
     // attestation.authDataから何出てくるか知らんがパースする
@@ -201,13 +212,22 @@ pub fn deserialize_client_data(client_data: String) -> ClientData {
 
 // attestationObjectをcborデコードする
 pub fn deserialize_attestation_object(attestation_object: String) -> PublicKeyCredentialAttention {
-    let decoded_bytes = engine::general_purpose::URL_SAFE
-        .decode(attestation_object)
-        .unwrap();
-    let decoded_cbor: PublicKeyCredentialAttention =
-        serde_cbor::from_slice(&decoded_bytes).unwrap();
+    let decoded_bytes = engine::general_purpose::URL_SAFE_NO_PAD.decode(attestation_object);
 
-    return decoded_cbor;
+    match decoded_bytes {
+        Ok(bytes) => {
+            let decoded_cbor: PublicKeyCredentialAttention =
+                serde_cbor::from_slice(&bytes).unwrap();
+
+            return decoded_cbor;
+        }
+        Err(e) => panic!("Failed to decode attestation object: {}", e),
+    }
+
+    // let decoded_cbor: PublicKeyCredentialAttention =
+    //     serde_cbor::from_slice(&decoded_bytes).unwrap();
+
+    // return decoded_cbor;
 }
 
 // pub fn parse_attestation_object_auth_data(auth_data: Vec<u8>) -> AttestationObject {
