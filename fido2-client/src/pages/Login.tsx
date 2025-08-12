@@ -23,7 +23,7 @@ export const Login = () => {
    * 1. RPサーバーからチャレンジを取得
    */
   const getChallengeFromRpServer = async () => {
-    const response = await fetch("http://localhost:9000/rp/create");
+    const response = await fetch("/api/rp/create");
     const challenge =
       (await response.json()) as PublicKeyCredentialCreationOptionsJSON;
     // (await response.json()) as PublicKeyCredentialCreationOptions;
@@ -116,7 +116,7 @@ export const Login = () => {
     jsonOptions: PublicKeyCredentialCreationOptionsJSON
   ) => {
     console.info(credentialResponse);
-    const response = await fetch("http://localhost:9000/rp/verify", {
+    const response = await fetch("/api/rp/verify", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

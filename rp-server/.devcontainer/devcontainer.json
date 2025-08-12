@@ -3,6 +3,7 @@
   "dockerComposeFile": "../../docker-compose.yml",
   "service": "rust",
   "workspaceFolder": "/workspace/rp-server",
+  "remoteUser": "root",
   "customizations": {
     "vscode": {
       "extensions": [
