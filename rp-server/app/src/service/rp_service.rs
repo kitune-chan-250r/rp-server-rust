@@ -4,6 +4,7 @@ use std::fmt::Display;
 
 use crate::model::attestation_object::AttestationObject;
 use crate::model::client_data::ClientData;
+use crate::model::collection_auth_challenge::CollectionAuthChallengeBuilder;
 use crate::model::collection_challenge::CollectionChallenge;
 use crate::model::collection_challenge::CollectionChallengeBuilder;
 use crate::model::collection_user_credential::CollectionUserCredential;
@@ -17,6 +18,8 @@ use crate::model::public_key_credential_parameters::PublicKeyCredentialType;
 use crate::model::public_key_credential_response::PublicKeyCredential;
 use crate::model::public_key_credential_rp_entity::PublicKeyCredentialRpEntityBuilder;
 use crate::model::public_key_credential_user_entity::PublicKeyCredentialUserEntityBuilder;
+use crate::model::start_usernameless_auth_response::StartUsernamelessAuthResponse;
+use crate::model::start_usernameless_auth_response::StartUsernamelessAuthResponseBuilder;
 use actix_web::web;
 use actix_web::HttpRequest;
 use base64::alphabet::URL_SAFE;
@@ -519,3 +522,41 @@ pub fn decode_credential_puglic_key(credential_public_key: Vec<u8>) -> serde_jso
 //     },
 //     "type": "public-key"
 //   }
+
+// 認証チャレンジを作成し、永続化とフロントへ返す
+pub async fn start_usernameless_authenticate(
+    challenge_collection: web::Data<Collection<CollectionChallenge>>,
+) -> Result<StartUsernamelessAuthResponse, Box<dyn Error>> {
+    // チャレンジの文字列を作成
+    let challenge = generate_challenge().to_string();
+    let user_verification = String::from("preferred"); // `required` | `preferred` | `discouraged`
+    let timeout = Some(60);
+
+    // let auth_challenge = CollectionAuthChallengeBuilder::default()
+    //     .pk(challenge.clone()) // ここではchallengeがpk
+    //     .sk("USERNAMELESS_SIGN_IN")
+    //     .exp(timeout)
+    //     .build()?;
+
+    let auth_challenge = CollectionChallengeBuilder::default()
+        .pk(challenge.clone())
+        .sk("USERNAMELESS_SIGN_IN")
+        .exp(timeout)
+        .build()?;
+
+    // 永続化
+    let result = challenge_collection.insert_one(auth_challenge).await;
+
+    match result {
+        Ok(_) => info!("Challenge saved successfully"),
+        Err(e) => return Err(Box::new(e)),
+    }
+
+    let response = StartUsernamelessAuthResponseBuilder::default()
+        .challenge(challenge)
+        .timeout(timeout)
+        .user_verification(user_verification)
+        .build()?;
+
+    Ok(response)
+}

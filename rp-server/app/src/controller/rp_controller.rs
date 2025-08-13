@@ -4,6 +4,7 @@ use crate::model::{
 };
 use crate::service::rp_service;
 use actix_web::{get, post, web, HttpRequest, HttpResponse, Responder};
+use log::error;
 use mongodb::Collection;
 
 #[get("/hello")]
@@ -39,4 +40,18 @@ pub async fn verify_response(
     )
     .await;
     HttpResponse::Ok().json(result)
+}
+
+#[post("/rp/usernameless/challenge")]
+pub async fn start_usernameless_authenticate(
+    challenge_collection: web::Data<Collection<CollectionChallenge>>,
+) -> impl Responder {
+    let result = rp_service::start_usernameless_authenticate(challenge_collection).await;
+    match result {
+        Ok(success) => HttpResponse::Ok().json(success),
+        Err(failed) => {
+            error!("Failed to start usernameless authentication: {}", failed);
+            HttpResponse::BadRequest().json("create challenge failed")
+        }
+    }
 }
