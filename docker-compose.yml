@@ -48,3 +48,7 @@ services:
       ME_CONFIG_BASICAUTH_PASSWORD: password
     depends_on: # 依存関係を設定
      - mongo-db
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
