@@ -1,7 +1,6 @@
 import { bufferToBase64Url } from "../utils";
 
-type AuthenticatorAttestationResponseWithOptionalMembers =
-  AuthenticatorAttestationResponse & {
+type AuthenticatorAttestationResponseWithOptionalMembers = AuthenticatorAttestationResponse & {
     getTransports?: () => "" | string[];
     getAuthenticatorData?: () => unknown;
     getPublicKey?: () => unknown;
@@ -18,14 +17,19 @@ type PublicKeyCredentialResponse = {
   type: string;
 };
 
+type UsernamelessChallengeResponse = {
+  challenge: string;
+  timeout: number;
+  userVerification: string;
+};
+
 export const Login = () => {
   /**
    * 1. RPサーバーからチャレンジを取得
    */
   const getChallengeFromRpServer = async () => {
     const response = await fetch("/api/rp/create");
-    const challenge =
-      (await response.json()) as PublicKeyCredentialCreationOptionsJSON;
+    const challenge = (await response.json()) as PublicKeyCredentialCreationOptionsJSON;
     // (await response.json()) as PublicKeyCredentialCreationOptions;
     console.info(challenge);
 
@@ -62,9 +66,7 @@ export const Login = () => {
   /**
    * 3.
    */
-  const fido2CompleteCreateCredential = async (
-    credential: PublicKeyCredential
-  ) => {
+  const fido2CompleteCreateCredential = async (credential: PublicKeyCredential) => {
     // if (
     //   !(credential instanceof PublicKeyCredential) ||
     //   !(credential.response instanceof AuthenticatorAssertionResponse)
@@ -93,9 +95,7 @@ export const Login = () => {
       (
         response as unknown as AuthenticatorAttestationResponseWithOptionalMembers
       ).getTransports?.() || []
-    ).filter((transport) =>
-      ["ble", "hybrid", "internal", "nfc", "usb"].includes(transport)
-    );
+    ).filter((transport) => ["ble", "hybrid", "internal", "nfc", "usb"].includes(transport));
 
     return {
       response: {
@@ -120,7 +120,7 @@ export const Login = () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Challenge: jsonOptions.challenge,
+        "Challenge": jsonOptions.challenge,
       },
       body: JSON.stringify(credentialResponse),
     });
@@ -140,14 +140,37 @@ export const Login = () => {
     }
     // 3. 取得したパスキー認証情報を元に、チャレンジ情報の検証を行う
     const response = await fido2CompleteCreateCredential(credential);
-    // responseをバックエンドの/rp/verifyにPOSTする
+    // 4. responseをバックエンドの/rp/verifyにPOSTする
     const result = await registPublicKeyCredential(response, jsonOptions);
     console.info("認証結果", result);
   };
 
+  /**
+   * FIDO2による認証を開始する
+   *
+   * 参考にするフローの開始はauthenticateWithFido2()からスタート
+   */
+  const startAuthenticateWithFido2 = async () => {
+    const auth_challenge = await fetchUsernamelessChallenge();
+  };
+
+  /**
+   * 1. バックエンドにリクエストを送信し
+   * 認証チャレンジを作成して受け取る
+   */
+  const fetchUsernamelessChallenge = async () => {
+    const res = await fetch("/api/rp/usernameless/challenge", {
+      method: "POST",
+    });
+    const auth_challenge = (await res.json()) as UsernamelessChallengeResponse;
+    return auth_challenge;
+  };
+
   return (
     <div>
-      <button onClick={startRegistFidoAuth}>get Challenge</button>
+      <button onClick={startRegistFidoAuth}>registCredential</button>
+      <br />
+      <button onClick={startAuthenticateWithFido2}>usernameless auth</button>
     </div>
   );
 };
