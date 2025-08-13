@@ -90,6 +90,7 @@ async fn main() -> std::io::Result<()> {
             .service(rp_controller::create_challenge_options)
             .service(rp_controller::hello_world)
             .service(rp_controller::verify_response)
+            .service(rp_controller::start_usernameless_authenticate)
     })
     .bind("rust:9000")?
     .run()

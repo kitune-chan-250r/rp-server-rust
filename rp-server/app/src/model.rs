@@ -1,5 +1,6 @@
 pub mod attestation_object;
 pub mod client_data;
+pub mod collection_auth_challenge;
 pub mod collection_challenge;
 pub mod collection_user_credential;
 pub mod public_key_credential_attention;
@@ -8,3 +9,4 @@ pub mod public_key_credential_parameters;
 pub mod public_key_credential_response;
 pub mod public_key_credential_rp_entity;
 pub mod public_key_credential_user_entity;
+pub mod start_usernameless_auth_response;
