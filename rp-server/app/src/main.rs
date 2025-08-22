@@ -92,6 +92,7 @@ async fn main() -> std::io::Result<()> {
     let client = Client::with_options(client_options).expect("Failed to connect to MongoDB");
     info!("Connected to MongoDB");
     create_challenge_index(&client).await;
+    create_user_credential_index(&client).await;
 
     let challenge_collection: Collection<CollectionChallenge> = client
         .database(&DB_NAME)
@@ -125,6 +126,7 @@ async fn main() -> std::io::Result<()> {
             .service(rp_controller::hello_world)
             .service(rp_controller::verify_response)
             .service(rp_controller::start_usernameless_authenticate)
+            .service(rp_controller::verify_usernameless_challenge)
     })
     .bind("rust:9000")?
     .run()
