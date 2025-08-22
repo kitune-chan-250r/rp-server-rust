@@ -9,6 +9,7 @@ use crate::model::public_key_credential_creation_options::PublicKeyCredentialCre
 pub struct CollectionChallenge {
     pub pk: String, // user uuid
     pub sk: String, // challenge
+    #[builder(default)]
     pub options: PublicKeyCredentialCreationOptions,
     pub exp: Option<i64>,
 }

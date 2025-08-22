@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 #[builder(setter(into))]
 pub struct CollectionUserCredential {
     pub pk: String, // user uuid
-    pub sk: String, // challenge
+    pub sk: String, // credential id
     pub user_id: String,
     pub credential_id: String,
     pub jwk: serde_json::Value,
