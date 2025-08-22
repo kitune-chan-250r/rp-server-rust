@@ -714,7 +714,7 @@ fn challenge_verifier(
 fn origin_verifier(origin: &String) -> Result<(), Box<dyn Error>> {
     // ここでoriginの検証を行う
     // 例えば、許可されたオリジンのリストと照合するなど
-    let allowed_origins = vec!["localhost", "example.com"];
+    let allowed_origins = vec!["http://localhost:5173", "http://example.com"];
 
     if allowed_origins.contains(&origin.as_str()) {
         Ok(())
