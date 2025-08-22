@@ -9,6 +9,7 @@ use crate::model::collection_challenge::CollectionChallenge;
 use crate::model::collection_challenge::CollectionChallengeBuilder;
 use crate::model::collection_user_credential::CollectionUserCredential;
 use crate::model::collection_user_credential::CollectionUserCredentialBuilder;
+use crate::model::fido2_options::Fido2OptionsBuilder;
 use crate::model::public_key_credential_attention::PublicKeyCredentialAttention;
 use crate::model::public_key_credential_creation_options::PublicKeyCredentialCreationOptions;
 use crate::model::public_key_credential_creation_options::PublicKeyCredentialCreationOptionsBuilder;
@@ -20,6 +21,9 @@ use crate::model::public_key_credential_rp_entity::PublicKeyCredentialRpEntityBu
 use crate::model::public_key_credential_user_entity::PublicKeyCredentialUserEntityBuilder;
 use crate::model::start_usernameless_auth_response::StartUsernamelessAuthResponse;
 use crate::model::start_usernameless_auth_response::StartUsernamelessAuthResponseBuilder;
+use crate::model::verify_auth_challenge_request::ChallengeRequest;
+use crate::model::verify_auth_challenge_request::VerifyAuthChallengeRequest;
+use actix_session::Session;
 use actix_web::web;
 use actix_web::HttpRequest;
 use base64::alphabet::URL_SAFE;
@@ -28,11 +32,20 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use log::info;
 use log::log;
+use mongodb::bson::doc;
+use mongodb::change_stream::session;
 use mongodb::Collection;
+use p256::ecdsa::signature::Verifier;
+use rsa::pkcs1v15;
+use rsa::Pkcs1v15Sign;
+// Verifierトレイトをインポート
 use serde::{Deserialize, Serialize};
 use serde_cbor::Value;
 use serde_json::json;
+use sha2::digest::generic_array::GenericArray;
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use uuid::Uuid;
+
 pub fn hello() -> String {
     return "Hello, world!".to_string();
 }
@@ -115,7 +128,7 @@ pub async fn verify_response(
     user_credential_collection: web::Data<Collection<CollectionUserCredential>>,
     req: HttpRequest,
     public_key_credential: web::Json<PublicKeyCredential>,
-) -> String {
+) -> Result<String, Box<dyn Error>> {
     // let mut challenge_value: String = String::new();
     // if let Some(challenge_value) = req.headers().get("Challenge") {
     //     // HeaderValueを文字列に変換（失敗する可能性があるのでResultを扱います）
@@ -128,7 +141,20 @@ pub async fn verify_response(
     //         ).await;
     //     }
     // }
-    let challenge_value = "somechallengevalue".to_string();
+
+    let challenge_value = req
+        .headers()
+        .get("Challenge")
+        .ok_or("header::Challenge is not found")?
+        .to_str()?;
+
+    let user_id = req
+        .headers()
+        .get("UserId")
+        .ok_or("header::UserId is not found")?
+        .to_str()?;
+
+    // TODO: 保存されたチャレンジと一致するかの確認が必要？もしかするとsessionに保存したもので検証する必要があるかもしれない
 
     // println!(
     //     "public key credential2: {}",
@@ -168,9 +194,9 @@ pub async fn verify_response(
 
     // 保存用のユーザー認証情報を作成
     let user_credential = CollectionUserCredentialBuilder::default()
-        .pk(public_key_credential.clone().raw_id)
-        .sk(challenge_value)
-        .user_id(public_key_credential.clone().raw_id)
+        .pk(user_id)
+        .sk(&public_key_credential.raw_id)
+        .user_id(user_id)
         .jwk(auth_data.credential_public_key)
         .sign_count(auth_data.sign_count)
         .friendly_name("body-kara-get")
@@ -192,7 +218,7 @@ pub async fn verify_response(
 
     info!("{:#?}", insert_result);
 
-    return public_key_credential.clone().raw_id;
+    return Ok(public_key_credential.clone().raw_id);
 }
 
 // varidation methods
@@ -525,18 +551,13 @@ pub fn decode_credential_puglic_key(credential_public_key: Vec<u8>) -> serde_jso
 
 // 認証チャレンジを作成し、永続化とフロントへ返す
 pub async fn start_usernameless_authenticate(
+    session: Session,
     challenge_collection: web::Data<Collection<CollectionChallenge>>,
 ) -> Result<StartUsernamelessAuthResponse, Box<dyn Error>> {
     // チャレンジの文字列を作成
     let challenge = generate_challenge().to_string();
     let user_verification = String::from("preferred"); // `required` | `preferred` | `discouraged`
     let timeout = Some(60);
-
-    // let auth_challenge = CollectionAuthChallengeBuilder::default()
-    //     .pk(challenge.clone()) // ここではchallengeがpk
-    //     .sk("USERNAMELESS_SIGN_IN")
-    //     .exp(timeout)
-    //     .build()?;
 
     let auth_challenge = CollectionChallengeBuilder::default()
         .pk(challenge.clone())
@@ -546,6 +567,15 @@ pub async fn start_usernameless_authenticate(
 
     // 永続化
     let result = challenge_collection.insert_one(auth_challenge).await;
+    // セッションにも保存(verifyで利用する)
+    // custom-auth/fido2.ts::createChallenge()を参考に構造体を作成し、sessionにしまう
+    let fido2_options = Fido2OptionsBuilder::default()
+        .challenge(challenge.clone())
+        .user_verification(user_verification.clone())
+        .relying_party_id("localhost".to_string())
+        .timeout(Some(60))
+        .build()?;
+    session.insert("fido2Options", fido2_options)?;
 
     match result {
         Ok(_) => info!("Challenge saved successfully"),
@@ -559,4 +589,319 @@ pub async fn start_usernameless_authenticate(
         .build()?;
 
     Ok(response)
+}
+
+/**
+ * フロントで署名されて戻ってきた認証情報を検証する
+ *
+ * ここで一つでもエラーが発生すれば認証エラーとなる
+ * custom-auth/fido2.ts::verifyChallenge()
+ */
+pub async fn verify_challenge(
+    session: Session,
+    answer: web::Json<ChallengeRequest>,
+    user_credential_collection: web::Data<Collection<CollectionUserCredential>>,
+) -> Result<u32, Box<dyn Error>> {
+    info!("Received answer: {:#?}", answer);
+    // MongoDBからuser_handleを元に認証情報を取得する この処理でuser_handleの検証とみなす
+    let stored_credential =
+        get_stored_credential(&answer.user_handle_b64, &user_credential_collection).await?;
+
+    // credentialIdの検証
+    credential_id_verifier(&answer.credential_id_b64, &stored_credential.credential_id)?;
+
+    // client data jsonをシリアライズ
+    let client_data_json = BASE64_URL_SAFE_NO_PAD.decode(&answer.client_data_json_b64)?;
+    let client_data: ClientData = serde_json::from_slice(&client_data_json)?;
+
+    // セッションに保存されたチャレンジを取得
+    let expected_challenge = session
+        .get::<String>("fido2Options")?
+        .ok_or("Challenge not found in session")?;
+
+    // チャレンジの検証
+    challenge_verifier(&client_data.challenge, &expected_challenge)?;
+
+    // originの検証
+    origin_verifier(&client_data.origin)?;
+
+    // typeの検証
+    type_verifier(&client_data.r#type)?;
+
+    let authenticator_data = parse_attestation_object_auth_data_ai_generated(
+        BASE64_URL_SAFE_NO_PAD.decode(answer.authenticator_data_b64.clone())?,
+    );
+
+    // rpIdHashの検証
+    rp_id_hash_verifier(&authenticator_data.rp_id_hash, &stored_credential.rp_id)?;
+
+    // user presentフラグの検証
+    if !authenticator_data.flag_user_present {
+        return Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "User not present",
+        )));
+    }
+
+    // signCountの検証（リプレイ攻撃対策）
+    sign_count_verifier(authenticator_data.sign_count, stored_credential.sign_count)?;
+
+    // 署名の検証
+    signature_verifyer(
+        stored_credential.jwk.clone(),
+        &answer.signature_b64,
+        &answer.authenticator_data_b64,
+        &answer.client_data_json_b64,
+    )?;
+
+    info!("All verifications passed successfully");
+    // 全ての検証が成功した場合、新しいsign_countを返す
+    Ok(authenticator_data.sign_count)
+}
+
+/**
+ * mongoDBからユーザー認証情報を取得する
+ */
+async fn get_stored_credential(
+    user_handle: &str,
+    user_credential_collection: &Collection<CollectionUserCredential>,
+) -> Result<CollectionUserCredential, Box<dyn Error>> {
+    let filter = doc! {"pk": user_handle};
+    let credential = user_credential_collection
+        .find_one(filter)
+        .await?
+        .ok_or("Credential not found")?;
+    Ok(credential)
+}
+
+// credential_idの検証
+fn credential_id_verifier(
+    credential_id_b64: &str,
+    stored_credential_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let decoded_bytes = BASE64_URL_SAFE_NO_PAD.decode(credential_id_b64)?;
+
+    // 2. バイト列をUTF-8文字列に変換
+    let binding = String::from_utf8(decoded_bytes)?;
+    let client_id_str = binding.as_str();
+    info!(
+        "credential_id_b64: {}, stored_credential_id: {}",
+        client_id_str, stored_credential_id
+    );
+
+    if client_id_str.eq(stored_credential_id) {
+        Ok(())
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Credential ID does not match",
+        )))
+    }
+}
+
+// challengeの検証
+fn challenge_verifier(
+    challenge: &String,
+    expected_challenge: &String,
+) -> Result<(), Box<dyn Error>> {
+    if challenge.eq(expected_challenge) {
+        Ok(())
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Challenge does not match",
+        )))
+    }
+}
+
+// originの検証
+fn origin_verifier(origin: &String) -> Result<(), Box<dyn Error>> {
+    // ここでoriginの検証を行う
+    // 例えば、許可されたオリジンのリストと照合するなど
+    let allowed_origins = vec!["localhost", "example.com"];
+
+    if allowed_origins.contains(&origin.as_str()) {
+        Ok(())
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Origin is not allowed",
+        )))
+    }
+}
+
+fn type_verifier(type_field: &String) -> Result<(), Box<dyn Error>> {
+    // 認証時はwebauthn.getでなければならない
+    let allowed_type = "webauthn.get";
+    if type_field.eq(allowed_type) {
+        Ok(())
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Type is not allowed",
+        )))
+    }
+}
+
+// fn parse_authenticator_data(
+//     authenticator_data_b64: &String,
+// ) -> Result<AuthenticatorData, Box<dyn Error>> {
+//     // 認証器データのパース処理を実装
+//     // ここでは、rpIdHash、flags、signCountなどを抽出する認証器データの形式に応じて必要な情報を抽出する
+//     let authenticator_data_bytes = BASE64_URL_SAFE_NO_PAD.decode(authenticator_data_b64)?;
+
+//     // 0から32バイトをrpIdHashとしてコピー
+//     let mut rp_id_hash = [0u8; 32];
+//     rp_id_hash.copy_from_slice(&authenticator_data_bytes[0..32]);
+
+//     // 32バイト目をflagsとして取得
+//     let flags = authenticator_data_bytes[32];
+
+//     // signCountは33バイト目から4バイトのBig Endian整数として取得
+//     let sign_count = u32::from_be_bytes(
+//         authenticator_data_bytes[33..37]
+//             .try_into()
+//             .map_err(|_| "Failed to read signCount")?,
+//     );
+
+//     Ok(AuthenticatorData {
+//         rp_id_hash,
+//         flags,
+//         sign_count,
+//     })
+// }
+
+// rpIdHashの検証を行う
+fn rp_id_hash_verifier(rp_id_hash: &Vec<u8>, stored_rp_id: &String) -> Result<(), Box<dyn Error>> {
+    let expected_rp_id_hash = Sha256::digest(stored_rp_id.as_bytes());
+
+    if rp_id_hash != expected_rp_id_hash.as_slice() {
+        Ok(())
+    } else {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "rpIdHash does not match",
+        )))
+    }
+}
+
+// signCountの検証を行う
+fn sign_count_verifier(sign_count: u32, stored_sign_count: u32) -> Result<(), Box<dyn Error>> {
+    if sign_count <= stored_sign_count {
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Sign count did not increase. Current: {}, Previous: {}",
+                sign_count, stored_sign_count,
+            ),
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+// 署名の検証
+fn signature_verifyer(
+    jwk: serde_json::Value,
+    signature_b64: &str,
+    authenticator_data_b64: &str,
+    client_data_json_b64: &str,
+) -> Result<(), Box<dyn Error>> {
+    // JWKのktyを取得
+    let kty = jwk["kty"].as_str().ok_or("Missing kty")?;
+
+    // 1. 署名とデータのデコード
+    let signature_byte = BASE64_URL_SAFE_NO_PAD.decode(signature_b64)?;
+    let authenticator_data = BASE64_URL_SAFE_NO_PAD.decode(authenticator_data_b64)?;
+    let client_data_json = BASE64_URL_SAFE_NO_PAD.decode(client_data_json_b64)?;
+
+    // 2. 検証対象メッセージの生成
+    // authenticatorData || sha256(clientDataJSON)
+    let mut hasher = Sha256::new();
+    hasher.update(&client_data_json);
+    let client_data_hash = hasher.finalize();
+
+    let mut verification_data = Vec::new();
+    verification_data.extend_from_slice(&authenticator_data);
+    verification_data.extend_from_slice(&client_data_hash);
+
+    match kty {
+        "EC" => {
+            // ECDSA検証
+            // x, y座標を取得
+            let x_b64 = jwk["x"].as_str().ok_or("Missing x coordinate")?;
+            let y_b64 = jwk["y"].as_str().ok_or("Missing y coordinate")?;
+
+            // Base64デコード
+            let x_coord = BASE64_URL_SAFE_NO_PAD.decode(x_b64)?;
+            let y_coord = BASE64_URL_SAFE_NO_PAD.decode(y_b64)?;
+
+            // signature_verifyerメソッド内の該当部分を修正
+            let x_array = GenericArray::clone_from_slice(&x_coord);
+            let y_array = GenericArray::clone_from_slice(&y_coord);
+
+            let encoded_point =
+                p256::EncodedPoint::from_affine_coordinates(&x_array, &y_array, false);
+
+            let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point)?;
+
+            // 署名をSignature型に変換
+            let signature_array = GenericArray::from_slice(&signature_byte);
+            let signature = p256::ecdsa::Signature::from_bytes(signature_array)?;
+
+            // 署名検証
+            verifying_key.verify(&verification_data, &signature)?;
+        }
+        "RSA" => {
+            // RSA検証
+            // モジュラスと公開指数を取得
+            let n_b64 = jwk["n"].as_str().ok_or("Missing modulus")?;
+            let e_b64 = jwk["e"].as_str().ok_or("Missing exponent")?;
+
+            // Base64デコード
+            let n = BASE64_URL_SAFE_NO_PAD.decode(n_b64)?;
+            let e = BASE64_URL_SAFE_NO_PAD.decode(e_b64)?;
+            let alg = jwk["alg"].as_str().ok_or("Missing algorithm (alg)")?;
+
+            // RSA公開キーを作成
+            let public_key = rsa::RsaPublicKey::new(
+                rsa::BigUint::from_bytes_be(&n),
+                rsa::BigUint::from_bytes_be(&e),
+            )?;
+
+            // 4. アルゴリズムに基づいてハッシュ関数を選択
+            let hashed_msg = match alg {
+                "RS256" => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(verification_data);
+                    hasher.finalize().to_vec()
+                }
+                "RS384" => {
+                    let mut hasher = Sha384::new();
+                    hasher.update(verification_data);
+                    hasher.finalize().to_vec()
+                }
+                "RS512" => {
+                    let mut hasher = Sha512::new();
+                    hasher.update(verification_data);
+                    hasher.finalize().to_vec()
+                }
+                _ => return Err("Unsupported RSA algorithm".into()),
+            };
+
+            // 5. 署名スキームを設定し検証を実行
+            let padding_scheme = match alg {
+                "RS256" => Pkcs1v15Sign::new::<Sha256>(),
+                "RS384" => Pkcs1v15Sign::new::<Sha384>(),
+                "RS512" => Pkcs1v15Sign::new::<Sha512>(),
+                _ => return Err("Unsupported RSA algorithm".into()),
+            };
+
+            // 署名検証
+            // public_key.verify(&hashed_msg, &signature)?;
+            public_key.verify(padding_scheme, &hashed_msg, &signature_byte)?;
+        }
+        _ => return Err("Unsupported key type".into()),
+    }
+    Ok(())
 }

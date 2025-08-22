@@ -1,11 +1,11 @@
-import { bufferToBase64Url } from "../utils";
+import { bufferFromBase64Url, bufferToBase64Url } from "../utils";
 
 type AuthenticatorAttestationResponseWithOptionalMembers = AuthenticatorAttestationResponse & {
-    getTransports?: () => "" | string[];
-    getAuthenticatorData?: () => unknown;
-    getPublicKey?: () => unknown;
-    getPublicKeyAlgorithm?: () => unknown;
-  };
+  getTransports?: () => "" | string[];
+  getAuthenticatorData?: () => unknown;
+  getPublicKey?: () => unknown;
+  getPublicKeyAlgorithm?: () => unknown;
+};
 
 type PublicKeyCredentialResponse = {
   response: {
@@ -20,7 +20,7 @@ type PublicKeyCredentialResponse = {
 type UsernamelessChallengeResponse = {
   challenge: string;
   timeout: number;
-  userVerification: string;
+  userVerification: UserVerificationRequirement;
 };
 
 export const Login = () => {
@@ -121,6 +121,7 @@ export const Login = () => {
       headers: {
         "Content-Type": "application/json",
         "Challenge": jsonOptions.challenge,
+        "UserId": jsonOptions.user.id,
       },
       body: JSON.stringify(credentialResponse),
     });
@@ -151,7 +152,30 @@ export const Login = () => {
    * 参考にするフローの開始はauthenticateWithFido2()からスタート
    */
   const startAuthenticateWithFido2 = async () => {
+    // 1. バックエンドにリクエストを送信し認証チャレンジを取得する
     const auth_challenge = await fetchUsernamelessChallenge();
+    // 2. navigator.credentials.get()で署名済みの認証情報を取得する
+    const credential = await getFido2Credential({ ...auth_challenge });
+
+    console.debug("Credential obtained:", credential);
+
+    if (!credential) {
+      console.error("credential is null");
+      return;
+    } else if (!(credential instanceof PublicKeyCredential)) {
+      console.error("credential is not an instance of PublicKeyCredential");
+      return;
+    }
+
+    // 3. 取得した認証情報をパースして、必要な情報を抽出する
+    const fido2Credential = await parseAuthenticatorAssertionResponse(
+      credential.rawId,
+      credential.response as AuthenticatorAssertionResponse
+    );
+
+    console.debug("fido2Credential: ", fido2Credential);
+
+    verifyChallenge(fido2Credential);
   };
 
   /**
@@ -164,6 +188,94 @@ export const Login = () => {
     });
     const auth_challenge = (await res.json()) as UsernamelessChallengeResponse;
     return auth_challenge;
+  };
+
+  // fido2getCredential
+  /**
+   * 2. navigator.credentials.get()で認証情報を取得する
+   */
+  const getFido2Credential = async ({
+    challenge,
+    timeout,
+    userVerification,
+  }: {
+    challenge: string;
+    timeout: number;
+    userVerification: UserVerificationRequirement;
+  }) => {
+    // const rp_name = "manji_rp";
+    console.debug("base64challenge", bufferFromBase64Url(challenge));
+
+    const publicKey: CredentialRequestOptions["publicKey"] = {
+      challenge: bufferFromBase64Url(challenge),
+      timeout,
+      userVerification,
+      // rpId: relyingPartyId, // 一旦なしでやってみる
+      // extensions, // 一旦なしでやってみる
+    };
+    console.debug("Assembled public key options:", publicKey);
+    const credential = await navigator.credentials.get({
+      publicKey,
+    });
+
+    return credential;
+  };
+
+  /**
+   * 3. 取得した認証情報をパースして、必要な情報を抽出する
+   */
+  const parseAuthenticatorAssertionResponse = async (
+    rawId: ArrayBuffer,
+    response: AuthenticatorAssertionResponse
+  ) => {
+    const [credentialIdB64, authenticatorDataB64, clientDataJSON_B64, signatureB64, userHandleB64] =
+      await Promise.all([
+        bufferToBase64Url(rawId),
+        bufferToBase64Url(response.authenticatorData),
+        bufferToBase64Url(response.clientDataJSON),
+        bufferToBase64Url(response.signature),
+        response.userHandle && response.userHandle.byteLength > 0
+          ? bufferToBase64Url(response.userHandle)
+          : null,
+      ]);
+    return {
+      credentialIdB64,
+      authenticatorDataB64,
+      clientDataJSON_B64,
+      signatureB64,
+      userHandleB64,
+    };
+  };
+
+  const verifyChallenge = async ({
+    credentialIdB64,
+    authenticatorDataB64,
+    clientDataJSON_B64,
+    signatureB64,
+    userHandleB64,
+  }: {
+    credentialIdB64: string;
+    authenticatorDataB64: string;
+    clientDataJSON_B64: string;
+    signatureB64: string;
+    userHandleB64: string | null;
+  }) => {
+    const res = await fetch("/api/rp/usernameless/verify", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        credentialIdB64,
+        authenticatorDataB64,
+        clientDataJSON_B64,
+        signatureB64,
+        userHandleB64,
+      }),
+    });
+    const signinCount = await res.json();
+
+    console.info("verifyChallenge result", signinCount);
   };
 
   return (
