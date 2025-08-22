@@ -681,17 +681,11 @@ fn credential_id_verifier(
     credential_id_b64: &str,
     stored_credential_id: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let decoded_bytes = BASE64_URL_SAFE_NO_PAD.decode(credential_id_b64)?;
-
     // 2. バイト列をUTF-8文字列に変換
-    let binding = String::from_utf8(decoded_bytes)?;
-    let client_id_str = binding.as_str();
-    info!(
-        "credential_id_b64: {}, stored_credential_id: {}",
-        client_id_str, stored_credential_id
-    );
+    let decoded_credential = BASE64_URL_SAFE_NO_PAD.decode(credential_id_b64)?;
+    let decoded_stored = BASE64_URL_SAFE_NO_PAD.decode(stored_credential_id)?;
 
-    if client_id_str.eq(stored_credential_id) {
+    if decoded_credential.eq(&decoded_stored).into() {
         Ok(())
     } else {
         Err(Box::new(std::io::Error::new(
