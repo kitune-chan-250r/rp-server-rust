@@ -9,6 +9,7 @@ use crate::model::collection_challenge::CollectionChallenge;
 use crate::model::collection_challenge::CollectionChallengeBuilder;
 use crate::model::collection_user_credential::CollectionUserCredential;
 use crate::model::collection_user_credential::CollectionUserCredentialBuilder;
+use crate::model::fido2_options::Fido2Options;
 use crate::model::fido2_options::Fido2OptionsBuilder;
 use crate::model::public_key_credential_attention::PublicKeyCredentialAttention;
 use crate::model::public_key_credential_creation_options::PublicKeyCredentialCreationOptions;
@@ -616,11 +617,12 @@ pub async fn verify_challenge(
 
     // セッションに保存されたチャレンジを取得
     let expected_challenge = session
-        .get::<String>("fido2Options")?
+        .get::<Fido2Options>("fido2Options")?
         .ok_or("Challenge not found in session")?;
 
+    info!("Expected challenge: {:#?}", expected_challenge);
     // チャレンジの検証
-    challenge_verifier(&client_data.challenge, &expected_challenge)?;
+    challenge_verifier(&client_data.challenge, &expected_challenge.challenge)?;
 
     // originの検証
     origin_verifier(&client_data.origin)?;
