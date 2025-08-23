@@ -1,4 +1,5 @@
 pub mod attestation_object;
+pub mod authenticator_data;
 pub mod client_data;
 pub mod collection_auth_challenge;
 pub mod collection_challenge;

@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt::Display;
 
 use crate::model::attestation_object::AttestationObject;
+use crate::model::authenticator_data::AuthenticatorData;
 use crate::model::client_data::ClientData;
 use crate::model::collection_auth_challenge::CollectionAuthChallengeBuilder;
 use crate::model::collection_challenge::CollectionChallenge;
@@ -630,9 +631,8 @@ pub async fn verify_challenge(
     // typeの検証
     type_verifier(&client_data.r#type)?;
 
-    let authenticator_data = parse_attestation_object_auth_data_ai_generated(
-        BASE64_URL_SAFE_NO_PAD.decode(answer.authenticator_data_b64.clone())?,
-    );
+    // authenticator dataのパース
+    let authenticator_data = parse_authenticator_data(&answer.authenticator_data_b64)?;
 
     // rpIdHashの検証
     rp_id_hash_verifier(&authenticator_data.rp_id_hash, &stored_credential.rp_id)?;
@@ -739,33 +739,48 @@ fn type_verifier(type_field: &String) -> Result<(), Box<dyn Error>> {
     }
 }
 
-// fn parse_authenticator_data(
-//     authenticator_data_b64: &String,
-// ) -> Result<AuthenticatorData, Box<dyn Error>> {
-//     // 認証器データのパース処理を実装
-//     // ここでは、rpIdHash、flags、signCountなどを抽出する認証器データの形式に応じて必要な情報を抽出する
-//     let authenticator_data_bytes = BASE64_URL_SAFE_NO_PAD.decode(authenticator_data_b64)?;
+fn parse_authenticator_data(
+    authenticator_data_b64: &String,
+) -> Result<AuthenticatorData, Box<dyn Error>> {
+    // 認証器データのパース処理を実装
+    // ここでは、rpIdHash、flags、signCountなどを抽出する認証器データの形式に応じて必要な情報を抽出する
+    let authenticator_data_bytes = BASE64_URL_SAFE_NO_PAD.decode(authenticator_data_b64)?;
 
-//     // 0から32バイトをrpIdHashとしてコピー
-//     let mut rp_id_hash = [0u8; 32];
-//     rp_id_hash.copy_from_slice(&authenticator_data_bytes[0..32]);
+    // Authenticator Dataの最小長は37バイト (RP ID Hash 32 + Flags 1 + Sign Count 4)
+    if authenticator_data_bytes.len() < 37 {
+        return Err("Authenticator data is too short".to_string().into());
+    }
 
-//     // 32バイト目をflagsとして取得
-//     let flags = authenticator_data_bytes[32];
+    let rp_id_hash = authenticator_data_bytes[0..32].to_vec();
 
-//     // signCountは33バイト目から4バイトのBig Endian整数として取得
-//     let sign_count = u32::from_be_bytes(
-//         authenticator_data_bytes[33..37]
-//             .try_into()
-//             .map_err(|_| "Failed to read signCount")?,
-//     );
+    let flags = authenticator_data_bytes[32];
+    let flag_user_present = (flags & 0b1) != 0;
+    let flag_reserved_future_use1 = ((flags >> 1) & 0b1) != 0;
+    let flag_user_verified = ((flags >> 2) & 0b1) != 0;
+    let flag_backup_eligibility = ((flags >> 3) & 0b1) as u8;
+    let flag_backup_state = ((flags >> 4) & 0b1) as u8;
+    let flag_reserved_future_use2 = ((flags >> 5) & 0b1) != 0;
+    let flag_attested_credential_data = ((flags >> 6) & 0b1) != 0;
+    let flag_extension_data_included = ((flags >> 7) & 0b1) != 0;
 
-//     Ok(AuthenticatorData {
-//         rp_id_hash,
-//         flags,
-//         sign_count,
-//     })
-// }
+    let sign_count_bytes: [u8; 4] = authenticator_data_bytes[33..37]
+        .try_into()
+        .map_err(|_| "Failed to convert sign_count bytes to array".to_string())?;
+    let sign_count = u32::from_be_bytes(sign_count_bytes);
+
+    Ok(AuthenticatorData {
+        rp_id_hash,
+        flag_user_present,
+        flag_reserved_future_use1,
+        flag_user_verified,
+        flag_backup_eligibility,
+        flag_backup_state,
+        flag_reserved_future_use2,
+        flag_attested_credential_data,
+        flag_extension_data_included,
+        sign_count,
+    })
+}
 
 // rpIdHashの検証を行う
 fn rp_id_hash_verifier(rp_id_hash: &Vec<u8>, stored_rp_id: &String) -> Result<(), Box<dyn Error>> {
