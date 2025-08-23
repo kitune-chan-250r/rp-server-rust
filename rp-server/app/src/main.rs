@@ -7,6 +7,8 @@ use controller::rp_controller;
 use log::info;
 use model::collection_user_credential::CollectionUserCredential;
 use rand::Rng;
+mod constants;
+mod error;
 mod model;
 mod service;
 use crate::model::collection_challenge::CollectionChallenge;

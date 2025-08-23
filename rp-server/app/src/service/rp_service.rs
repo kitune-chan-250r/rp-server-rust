@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Display;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::constants::{CHALLENGE_TIMEOUT_SECONDS, DEFAULT_CHALLENGE_TIMEOUT_SECONDS};
+use crate::error::WebAuthnError;
 use crate::model::attestation_object::AttestationObject;
 use crate::model::authenticator_data::AuthenticatorData;
 use crate::model::client_data::ClientData;
@@ -559,23 +562,30 @@ pub async fn start_usernameless_authenticate(
     // チャレンジの文字列を作成
     let challenge = generate_challenge().to_string();
     let user_verification = String::from("preferred"); // `required` | `preferred` | `discouraged`
-    let timeout = Some(60);
+    let timeout = Some(DEFAULT_CHALLENGE_TIMEOUT_SECONDS);
+
+    // チャレンジの有効期限を設定（現在のUNIX時間 + タイムアウト秒数）
+    let exp_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + CHALLENGE_TIMEOUT_SECONDS;
 
     let auth_challenge = CollectionChallengeBuilder::default()
         .pk(challenge.clone())
         .sk("USERNAMELESS_SIGN_IN")
-        .exp(timeout)
+        .exp(Some(exp_time))
         .build()?;
 
     // 永続化
     let result = challenge_collection.insert_one(auth_challenge).await;
+
     // セッションにも保存(verifyで利用する)
-    // custom-auth/fido2.ts::createChallenge()を参考に構造体を作成し、sessionにしまう
     let fido2_options = Fido2OptionsBuilder::default()
         .challenge(challenge.clone())
         .user_verification(user_verification.clone())
         .relying_party_id("localhost".to_string())
-        .timeout(Some(60))
+        .timeout(Some(CHALLENGE_TIMEOUT_SECONDS))
         .build()?;
     session.insert("fido2Options", fido2_options)?;
 
@@ -619,7 +629,21 @@ pub async fn verify_challenge(
     // セッションに保存されたチャレンジを取得
     let expected_challenge = session
         .get::<Fido2Options>("fido2Options")?
-        .ok_or("Challenge not found in session")?;
+        .ok_or(WebAuthnError::InvalidChallenge)?;
+
+    // チャレンジの有効期限チェック
+    // let current_time = SystemTime::now()
+    //     .duration_since(UNIX_EPOCH)
+    //     .unwrap()
+    //     .as_secs() as i64;
+
+    // if current_time
+    //     > expected_challenge
+    //         .timeout
+    //         .unwrap_or(DEFAULT_CHALLENGE_TIMEOUT_SECONDS)
+    // {
+    //     return Err(Box::new(WebAuthnError::ExpiredChallenge));
+    // }
 
     info!("Expected challenge: {:#?}", expected_challenge);
     // チャレンジの検証
@@ -639,10 +663,7 @@ pub async fn verify_challenge(
 
     // user presentフラグの検証
     if !authenticator_data.flag_user_present {
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "User not present",
-        )));
+        return Err(Box::new(WebAuthnError::UserNotPresent));
     }
 
     // signCountの検証（リプレイ攻撃対策）
@@ -672,7 +693,7 @@ async fn get_stored_credential(
     let credential = user_credential_collection
         .find_one(filter)
         .await?
-        .ok_or("Credential not found")?;
+        .ok_or(WebAuthnError::CredentialNotFound)?;
     Ok(credential)
 }
 
@@ -681,17 +702,13 @@ fn credential_id_verifier(
     credential_id_b64: &str,
     stored_credential_id: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // 2. バイト列をUTF-8文字列に変換
     let decoded_credential = BASE64_URL_SAFE_NO_PAD.decode(credential_id_b64)?;
     let decoded_stored = BASE64_URL_SAFE_NO_PAD.decode(stored_credential_id)?;
 
     if decoded_credential.eq(&decoded_stored).into() {
         Ok(())
     } else {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Credential ID does not match",
-        )))
+        Err(Box::new(WebAuthnError::InvalidCredentialId))
     }
 }
 
@@ -703,39 +720,29 @@ fn challenge_verifier(
     if challenge.eq(expected_challenge) {
         Ok(())
     } else {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Challenge does not match",
-        )))
+        Err(Box::new(WebAuthnError::InvalidChallenge))
     }
 }
 
 // originの検証
 fn origin_verifier(origin: &String) -> Result<(), Box<dyn Error>> {
-    // ここでoriginの検証を行う
-    // 例えば、許可されたオリジンのリストと照合するなど
     let allowed_origins = vec!["http://localhost:5173", "http://example.com"];
 
     if allowed_origins.contains(&origin.as_str()) {
         Ok(())
     } else {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Origin is not allowed",
-        )))
+        Err(Box::new(WebAuthnError::InvalidOrigin {
+            origin: origin.clone(),
+        }))
     }
 }
 
 fn type_verifier(type_field: &String) -> Result<(), Box<dyn Error>> {
-    // 認証時はwebauthn.getでなければならない
     let allowed_type = "webauthn.get";
     if type_field.eq(allowed_type) {
         Ok(())
     } else {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Type is not allowed",
-        )))
+        Err(Box::new(WebAuthnError::InvalidType))
     }
 }
 
@@ -786,28 +793,25 @@ fn parse_authenticator_data(
 fn rp_id_hash_verifier(rp_id_hash: &Vec<u8>, stored_rp_id: &String) -> Result<(), Box<dyn Error>> {
     let expected_rp_id_hash = Sha256::digest(stored_rp_id.as_bytes());
 
-    if rp_id_hash != expected_rp_id_hash.as_slice() {
+    if rp_id_hash == expected_rp_id_hash.as_slice() {
         Ok(())
     } else {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "rpIdHash does not match",
-        )))
+        Err(Box::new(WebAuthnError::InvalidRpIdHash {
+            expected: expected_rp_id_hash.to_vec(),
+            got: rp_id_hash.clone(),
+        }))
     }
 }
 
 // signCountの検証を行う
 fn sign_count_verifier(sign_count: u32, stored_sign_count: u32) -> Result<(), Box<dyn Error>> {
-    if sign_count <= stored_sign_count {
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "Sign count did not increase. Current: {}, Previous: {}",
-                sign_count, stored_sign_count,
-            ),
-        )))
-    } else {
+    if sign_count > stored_sign_count {
         Ok(())
+    } else {
+        Err(Box::new(WebAuthnError::ReplayAttack {
+            current: sign_count,
+            previous: stored_sign_count,
+        }))
     }
 }
 
